@@ -175,6 +175,7 @@ print(p2)
 
 ####Identification of DEGs####
 # ANCA
+pheno_ANCA$disease <- factor(pheno_ANCA$disease,levels = c("Control", "ANCA"))
 design_ANCA <- model.matrix(~ disease, data = pheno_ANCA)
 fit_ANCA <- lmFit(expr_ANCA_corrected, design_ANCA)
 fit_ANCA <- eBayes(fit_ANCA)
@@ -195,6 +196,7 @@ k1 = (degANCA$P.Value< P.Value)&(degANCA$logFC < -logFC)
 k2 = (degANCA$P.Value < P.Value)&(degANCA$logFC > logFC)
 degANCA$change = ifelse(k1,"down",ifelse(k2,"up","stable"))
 table(degANCA$change)
+write.table(degANCA, file = "degANCA_change.txt",sep = "\t",row.names = T,col.names = NA,quote = F)
 
 # # Identify Up- and Down-Regulated Genes(IgG4)
 degIgG4=DEGs_IgG4
@@ -237,13 +239,28 @@ g1 = ggplot(data=degANCA,
             aes(x=logFC, y=-log10(P.Value),
                 color=change)) +
   geom_point(alpha=0.4, size=1.75) +
-  theme_bw(base_size = 7) +
+  theme_bw(base_size = 10) +
   xlab("log2 fold change") + ylab("-log10 p-value") +
   ggtitle( this_tile ) +
   theme(plot.title = element_text(size=10,hjust = 0.5))+
   scale_colour_manual(values = c('blue','black','red'))
 print(g1)
 
+
+this_tile <- paste0('Volcano plot of IgG4-RD',round(logFC,3),
+                    '\nThe number of up gene is ',nrow(degIgG4[degIgG4$change =='up',]) ,
+                    '\nThe number of down gene is ',nrow(degIgG4[degIgG4$change =='down',])
+)
+g1 = ggplot(data=degIgG4,
+            aes(x=logFC, y=-log10(P.Value),
+                color=change)) +
+  geom_point(alpha=0.4, size=1.75) +
+  theme_bw(base_size = 10) +
+  xlab("log2 fold change") + ylab("-log10 p-value") +
+  ggtitle( this_tile ) +
+  theme(plot.title = element_text(size=10,hjust = 0.5))+
+  scale_colour_manual(values = c('blue','black','red'))
+print(g1)
 
 ####Functional enrichment analysis####
 library(tidyverse)
@@ -265,6 +282,7 @@ ego <- enrichGO(gene = DEGs_ANCA$ENTREZID,
                 qvalueCutoff =0.05,
                 readable = TRUE)
 ego_res <- ego@result
+write.table(ego_res, file = "ego_res.txt",sep = "\t",row.names = T,col.names = NA,quote = F)
 
 # Visualization
 barplot(ego, drop = TRUE, showCategory =10,split="ONTOLOGY") +
@@ -287,24 +305,24 @@ dev.off()
 #Lasso
 library("glmnet")
 
-gene=ppimcc15
+gene=PPIMCC15
 hubgenes=c(gene$V1)
 hubgenes_expression<-expr_ANCA_corrected[match(hubgenes,rownames (expr_ANCA_corrected)),]
 hubgenes_expression = na.omit(hubgenes_expression)
 x=as.matrix(hubgenes_expression[,c(1:ncol(hubgenes_expression))])
-set.seed(100)
-load('design-group_list.Rda')
-design=as.data.frame(design)
+set.seed(1)
+design_ANCA=as.data.frame(design_ANCA)
 
-y=data.matrix(design$ANCA)
+y=data.matrix(design_ANCA$diseaseANCA)
 x=t(x)
 
 #LASSO regression with 10‑fold cross‑validation
 fit=glmnet(x,y,family = "binomial",maxit = 1000)
 plot(fit,xvar="lambda",label = TRUE)
-cvfit = cv.glmnet(x,y,family="binomia",maxit = 1000)
+cvfit = cv.glmnet(x,y,family="binomial",maxit = 1000)
 plot(cvfit)
 dev.off()
+
 
 coef=coef(fit, s = cvfit$lambda.min)
 index=which(coef != 0)
@@ -319,7 +337,7 @@ library(tidyverse)
 library(Boruta)
 library(caret)
 colnames(group) <- c('sample', 'group')
-gene=ppimcc15
+gene=PPIMCC15
 colnames(gene) <- "symbol"
 dat <- expr_ANCA_corrected[rownames(expr_ANCA_corrected) %in% gene$symbol, ] %>%  t() %>%  as.data.frame()
 dat$sample <- rownames(dat)
@@ -412,23 +430,112 @@ ggplot(dataCXCL1,aes(x =Group,y=dataCXCL1,color=Group))+
 dev.off()
 write.csv(dataCXCL1,file = "dataCXCL1.csv",row.names = T)
 
-#ROC
+####ROC-Bootstrap####
 hubgenes=c("ITGAM","CXCL1")
 hubgenes_expression<-expr_ANCA_corrected[match(hubgenes,rownames (expr_ANCA_corrected)),]
 hubgenes_expression=as.matrix(hubgenes_expression)
 library(pROC)
+library(pROC)
+library(caret)
+set.seed(100)
 
-roc1<- roc(group_list, hubgenes_expression[1,])
-roc2<- roc(group_list, hubgenes_expression[2,])
-plot(roc1,col="red",legacy.axes=T)
-plot(roc2, add=TRUE, col="blue")
-round(auc(roc1),3)
-round(ci(roc1),3)
-round(auc(roc2),3)
-round(ci(roc2),3)
+# Data
+n <- ncol(hubgenes_expression)
+gene_names <- rownames(hubgenes_expression)
+expr_t <- t(hubgenes_expression)
 
-legend("bottomright", legend=c("ITGAM-auc0.864","CXCL1-auc0.944"),
-       col=c("red","blue","green","yellow"),lty=4)
+set.seed(100)
+B <- 200
+boot_auc_itgam <- c()
+boot_auc_cxcl1 <- c()
+y_num <- as.numeric(as.character(y))
+for (b in 1:B) {
+  boot_idx <- sample(1:n, size = n, replace = TRUE)
+  oob_idx <- setdiff(1:n, unique(boot_idx))
+  if (length(oob_idx) < 3 || length(unique(y_num[oob_idx])) < 2) next
+  # ITGAM
+  train_df <- data.frame(y = y_num[boot_idx], gene = expr_t[boot_idx, "ITGAM"])
+  if (length(unique(train_df$y)) > 1) {
+    fit <- glm(y ~ gene, data = train_df, family = binomial, maxit = 1000)
+    pred <- predict(fit, newdata = data.frame(gene = expr_t[oob_idx, "ITGAM"]), type = "response")
+    if (length(pred) == length(oob_idx)) {
+      boot_auc_itgam <- c(boot_auc_itgam, roc(y_num[oob_idx], pred, quiet = TRUE)$auc)
+    }
+  }
+  # CXCL1
+  train_df <- data.frame(y = y_num[boot_idx], gene = expr_t[boot_idx, "CXCL1"])
+  if (length(unique(train_df$y)) > 1) {
+    fit <- glm(y ~ gene, data = train_df, family = binomial, maxit = 1000)
+    pred <- predict(fit, newdata = data.frame(gene = expr_t[oob_idx, "CXCL1"]), type = "response")
+    if (length(pred) == length(oob_idx)) {
+      boot_auc_cxcl1 <- c(boot_auc_cxcl1, roc(y_num[oob_idx], pred, quiet = TRUE)$auc)
+    }
+  }
+}
+
+cat("\n========== Bootstrap Final Results (200 resamples)==========\n")
+cat(sprintf("ITGAM successfully performed %d calculations, with an average AUC: %.3f (95%% CI: %.3f - %.3f)\n",
+            length(boot_auc_itgam),
+            mean(boot_auc_itgam),
+            quantile(boot_auc_itgam, 0.025),
+            quantile(boot_auc_itgam, 0.975)))
+cat(sprintf("CXCL1 successfully performed %d calculations, with an average AUC: %.3f (95%% CI: %.3f - %.3f)\n",
+            length(boot_auc_cxcl1),
+            mean(boot_auc_cxcl1),
+            quantile(boot_auc_cxcl1, 0.025),
+            quantile(boot_auc_cxcl1, 0.975)))
+#ROC
+library(pROC)
+set.seed(100)
+# Bootstrap
+B <- 200
+n <- nrow(expr_t)
+
+all_y_oob_itgam <- c()
+all_pred_oob_itgam <- c()
+all_y_oob_cxcl1 <- c()
+all_pred_oob_cxcl1 <- c()
+
+for (b in 1:B) {
+  boot_idx <- sample(1:n, size = n, replace = TRUE)
+  oob_idx <- setdiff(1:n, unique(boot_idx))
+  if (length(oob_idx) < 3 || length(unique(y_num[oob_idx])) < 2) next
+  #ITGAM
+  train_df <- data.frame(y = y_num[boot_idx], gene = expr_t[boot_idx, "ITGAM"])
+  fit <- glm(y ~ gene, data = train_df, family = binomial, maxit = 1000)
+  pred <- predict(fit, newdata = data.frame(gene = expr_t[oob_idx, "ITGAM"]), type = "response")
+  all_y_oob_itgam <- c(all_y_oob_itgam, y_num[oob_idx])
+  all_pred_oob_itgam <- c(all_pred_oob_itgam, pred)
+  # CXCL1
+  train_df <- data.frame(y = y_num[boot_idx], gene = expr_t[boot_idx, "CXCL1"])
+  fit <- glm(y ~ gene, data = train_df, family = binomial, maxit = 1000)
+  pred <- predict(fit, newdata = data.frame(gene = expr_t[oob_idx, "CXCL1"]), type = "response")
+  all_y_oob_cxcl1 <- c(all_y_oob_cxcl1, y_num[oob_idx])
+  all_pred_oob_cxcl1 <- c(all_pred_oob_cxcl1, pred)
+}
+
+roc_boot_itgam <- roc(all_y_oob_itgam, all_pred_oob_itgam)
+roc_boot_cxcl1 <- roc(all_y_oob_cxcl1, all_pred_oob_cxcl1)
+
+# AUC
+auc_itgam_boot <- round(auc(roc_boot_itgam), 3)
+auc_cxcl1_boot <- round(auc(roc_boot_cxcl1), 3)
+
+
+plot(roc_boot_itgam, col = "red", legacy.axes = TRUE,
+     main = "Bootstrap-Corrected ROC Curves")
+plot(roc_boot_cxcl1, add = TRUE, col = "blue")
+legend("bottomright",
+       legend = c("ITGAM (AUC:0.921 95%CI:0.909 0.921 0.933)", "CXCL1 (AUC:0.937 95%CI:0.927 0.937 0.947)"),
+       col = c("red", "blue"), lwd = 2)
+#AUC and 95% IC
+round(auc(roc_boot_itgam), 3)
+round(ci(roc_boot_itgam), 3)
+round(auc(roc_boot_cxcl1), 3)
+round(ci(roc_boot_cxcl1), 3)
+legend("bottomright",
+       legend = c("ITGAM (AUC:0.921 95%CI:0.909 0.921 0.933)", "CXCL1 (AUC:0.937 95%CI:0.927 0.937 0.947)"),
+       col = c("red", "blue"), lwd = 2)
 
 ####GSEA####
 library(ggplot2)
@@ -517,7 +624,7 @@ library(preprocessCore)
 library(tidyverse)
 source("CIBERSORT.R")
 sig_matrix <- "LM22.txt"
-mixture_file = 'expr_ANCA_corrected.txt'
+mixture_file = 'expr_IgG4_corrected.txt'
 
 res_cibersort <- CIBERSORT(sig_matrix, mixture_file, perm=100, QN=TRUE)
 save(res_cibersort,file = "res_cibersort.Rdata")
@@ -590,13 +697,25 @@ b <- gather(a,key=CIBERSORT,value = Proportion,-c(group,sample))
 ggboxplot(b, x = "CIBERSORT", y = "Proportion",
           fill = "group", palette = "lancet") +
   scale_fill_manual(values = c("#DF1C26", "navy")) +
-  stat_compare_means(aes(group = group),
-                     method = "wilcox.test",
-                     label = "p.signif",
-                     symnum.args=list(cutpoints = c(0, 0.001, 0.01, 0.05,0.075, 1),
-                                      symbols = c("****","***", "**", "*", "ns")))+
-  theme(text = element_text(size=10),
-        axis.text.x = element_text(angle=45, hjust=1))
+  stat_compare_means(
+    aes(group = group),
+    method = "wilcox.test",
+    label = "p.signif",
+    label.size = 5,  # 显著性标记（*、ns）字号，默认约3.88，调大至5
+    symnum.args = list(
+      cutpoints = c(0, 0.001, 0.01, 0.05, 0.075, 1),
+      symbols = c("****", "***", "**", "*", "ns")
+    )
+  ) +
+  theme(
+    text = element_text(size = 14),          # 基础字号从10增至14
+    axis.title = element_text(size = 14),    # 轴标题（可选，默认继承text）
+    axis.text = element_text(size = 13),     # 轴刻度数字（略小于标题）
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 13), # 保留角度
+    legend.title = element_text(size = 14),  # 图例标题
+    legend.text = element_text(size = 13),   # 图例条目
+    plot.title = element_text(size = 16, face = "bold") # 若有主标题则调大
+  )
 dev.off()
 
 
@@ -702,7 +821,7 @@ library(devtools)
 library(MCPcounter)
 genes <- data.table::fread("genes.txt",data.table = F)
 probesets <- data.table::fread("probesets.txt",data.table = F,header = F)
-exp1=read.table("expr_IgG4_corrected.txt",header=T,sep="\t",row.names=1)
+exp1=read.table("expr_ANCA_corrected.txt",header=T,sep="\t",row.names=1)
 
 results<- MCPcounter.estimate(exp1,
                               featuresType="HUGO_symbols",
@@ -771,23 +890,32 @@ for (gene in overlap_genes) {
     ))
   }
 }
-# Filter for Significant Correlations
-significant_cor <- cor_results[cor_results$Pvalue < 0.05, ]
 
+# ================== 新增 FDR 校正 ================== #
+# 使用 Benjamini-Hochberg 方法控制错误发现率
+cor_results$FDR <- p.adjust(cor_results$Pvalue, method = "BH")
+# ================================================== #
+
+# 筛选显著相关（基于 FDR < 0.05）
+significant_cor <- cor_results[cor_results$FDR < 0.05, ]
+
+# 后续绘图：建议使用 FDR 标记显著性
 library(ggplot2)
 library(dplyr)
-#Significance
+
+# 修改显著性标记列（使用 FDR）
 cor_results <- cor_results %>%
   mutate(
-    neg_log_p = -log10(Pvalue),
+    neg_log_p = -log10(Pvalue),  # 气泡大小仍用原始 P 值
     Sig = case_when(
-      Pvalue < 0.001 ~ "***",
-      Pvalue < 0.01  ~ "**",
-      Pvalue < 0.05  ~ "*",
-      TRUE           ~ ""
+      FDR < 0.001 ~ "***",
+      FDR < 0.01  ~ "**",
+      FDR < 0.05  ~ "*",
+      TRUE        ~ ""
     )
   )
-# Visualization
+
+# 气泡图（使用 FDR 标记）
 p_bubble <- ggplot(cor_results, aes(x = CellType, y = Gene)) +
   geom_point(aes(color = Rho, size = neg_log_p), shape = 18) +
   geom_text(aes(label = Sig), color = "black", size = 4, vjust = 0.8) +
@@ -812,12 +940,8 @@ p_bubble <- ggplot(cor_results, aes(x = CellType, y = Gene)) +
     panel.grid.minor = element_blank()
   )
 print(p_bubble)
-library(ggplot2)
-library(ggpubr)
 
-#heatmaps
-library(ggplot2)
-
+# 热图（使用 FDR 标记）
 p_heatmap <- ggplot(cor_results, aes(x = CellType, y = Gene, fill = Rho)) +
   geom_tile(color = "white", size = 0.5) +
   geom_text(aes(label = paste0(round(Rho, 2), "\n", Sig)),
@@ -836,5 +960,195 @@ p_heatmap <- ggplot(cor_results, aes(x = CellType, y = Gene, fill = Rho)) +
     panel.grid.major = element_blank(),
     panel.grid.minor = element_blank()
   )
-
 print(p_heatmap)
+
+
+
+####GSE108109####
+setwd("GSE108109")
+library(tidyverse)
+chooseBioCmirror()
+BiocManager::install('GEOquery')
+library(GEOquery)
+gset = getGEO('GSE108109', destdir=".", AnnotGPL = F, getGPL = F)
+
+gset[[1]]
+pdata <- pData(gset[[1]])
+table(pdata$source_name_ch1)
+library(stringr)
+row_tom1 <- filter(pdata,source_name_ch1 == "Kidney Biopsy from Human ANCA Associated Vasculitis")
+row_tom2 <- filter(pdata,source_name_ch1== "Kidney Biopsy from Human Living donor")
+data <- rbind(row_tom1, row_tom2)
+
+
+group_list <- ifelse(str_detect(data$source_name_ch1, "Kidney Biopsy from Human ANCA Associated Vasculitis"), "ANCA",
+                     "control")
+group_list = factor(group_list,
+                    levels = c("control","ANCA"))
+
+exp <- exprs(gset[[1]])
+comgene <- intersect(colnames(exp),rownames(data))
+expr <- exp[,comgene]
+boxplot(expr,outline=FALSE, notch=T,col=group_list, las=2)
+dev.off()
+
+library(limma)
+exp=normalizeBetweenArrays(expr)
+boxplot(exp,outline=FALSE, notch=T,col=group_list, las=3)
+range(exp)
+exp1 <- log2(exp+1)
+range(exp1)
+exp=exp1
+dev.off()
+qx <- as.numeric(quantile(exp, c(0., 0.25, 0.5, 0.75, 0.99, 1.0), na.rm=T))
+LogC <- (qx[5] > 100) ||
+  (qx[6]-qx[1] > 50 && qx[2] > 0) ||
+  (qx[2] > 0 && qx[2] < 1 && qx[4] > 1 && qx[4] < 2)
+
+if (LogC) { exp[which(exp <= 0)] <- NaN
+exprSet <- log2(exp)
+print("log2 transform finished")}else{print("log2 transform not needed")}
+index = gset[[1]]@annotation
+#Import the GPL and add comments
+library(org.Hs.eg.db)
+keytypes(org.Hs.eg.db)
+colnames(gpl)
+x1=gpl$ENTREZ_GENE_ID
+x1=as.character (x1)
+x2=AnnotationDbi::select(org.Hs.eg.db , keys=x1,
+                         columns = c("ENTREZID" , "SYMBOL"),keytype = "ENTREZID")
+gpl1<- gpl[, c(1, 2)]
+gpl1$gene=x2$SYMBOL
+gpl <- gpl1
+
+gpl <- na.omit(gpl)
+exp <- as.data.frame(exp)
+rownames(gpl) <- gpl$ID
+gpl1 <- gpl[,-1]
+comname<-intersect(rownames(exp),rownames(gpl1))
+exp <- exp[comname,]
+gpl1 <- gpl1[comname,]
+exp1 <- cbind(gpl1,exp)
+exp1 <- exp1[!duplicated(exp1$gene),]
+rownames(exp1) <- exp1$gene
+exp1 <- exp1[,-(1:2)]
+write.table(exp1, file = "exp1.txt",sep = "\t",row.names = T,col.names = NA,quote = F)
+#Corresponding Groups
+identical(colnames(exp1), rownames(data))
+data <- data[colnames(exp1), ]
+group_list <- ifelse(str_detect(data$source_name_ch1, "Kidney Biopsy from Human ANCA Associated Vasculitis"), "ANCA",
+                     "control")
+group_list = factor(group_list,
+                    levels = c("control","ANCA"))
+
+#Identification of DEGs
+library(limma)
+design=model.matrix(~0+factor(group_list))
+rownames(design)=rownames(data)
+colnames(design)=levels(factor(group_list))
+
+contrast.matrix=makeContrasts(ANCA-control,levels = design)
+fit=lmFit(exp1,design)
+fit <- contrasts.fit(fit, contrast.matrix)
+fit <- eBayes(fit)
+deg=topTable(fit,coef=1,number = Inf)
+nrDEG = na.omit(deg)
+head(nrDEG)
+write.table(nrDEG, file = "deg_all.txt",sep = "\t",row.names = T,col.names = NA,quote = F)
+nrDEG <- read.table("deg_all.txt",sep = "\t",row.names = 1,check.names = F,stringsAsFactors = F,header = T)
+deg=nrDEG
+#Identify Up- and Down-Regulated Genes
+logFC=1
+P.Value = 0.05
+k1 = (deg$P.Value< P.Value)&(deg$logFC < -logFC)
+k2 = (deg$P.Value < P.Value)&(deg$logFC > logFC)
+deg$change = ifelse(k1,"down",ifelse(k2,"up","stable"))
+table(deg$change)
+write.table(deg, file = "deg_change.txt",sep = "\t",row.names = T,col.names = NA,quote = F)
+
+hubgenes=c("ITGAM","CXCL1")
+hubgenes_expression<-exp1[match(hubgenes,rownames (exp1)),]
+hubgenes_expression = na.omit(hubgenes_expression)
+x=as.matrix(hubgenes_expression[,c(1:ncol(hubgenes_expression))])
+#cox
+library(ggrepel)
+library(ggplot2)
+library(ggpubr)
+colors=c('#4169E1','#FF0000','#A136A1')
+write.table(design, file = "design.txt",sep = "\t",row.names = T,col.names = NA,quote = F)
+group <- read.table("group.txt",sep = "\t",row.names = 1,check.names = F,stringsAsFactors = F,header = T)
+group <- group %>% rownames_to_column("sample")
+
+#ITGAM
+dataITGAM= data.frame(t(x["ITGAM",group$sample]))#
+dataITGAM=t(dataITGAM)
+dataITGAM=data.frame(dataITGAM)
+
+group_name =unique(group$group)
+my_comparison =as.list(as.data.frame(combn(group_name,2)))
+dataITGAM$Group = factor(group$group)
+# Visualization(ITGAM)
+ggplot(dataITGAM,aes(x =Group,y=dataITGAM,color=Group))+
+  scale_color_manual(values=colors[1:2])+
+  geom_boxplot(width=0.5)+
+  geom_point(position = position_jitter(0.2),size=1)+
+  stat_summary(fun=median,geom='crossbar',size=1,width=0.3)+
+  stat_compare_means(comparisons=my_comparison,size=13,#p.format displays only the p-value and not the test method; p.signif displays the significance level symbol.
+                     method='wilcox.test',exact=FALSE,aes(label=..p.signif..))+
+  coord_cartesian(ylim = c(0,5))+
+  theme_bw()+xlab("")+ylab("ITGAMGene(log2CPM)")+
+  theme(panel.grid.major=element_blank(),panel.grid.minor=element_blank())+
+  theme(axis.text=element_text(size=20,colour="black",face="bold"),
+        axis.title=element_text(size=20,colour="black",face= "bold"),
+        legend.text=element_text(size=20,face="bold"),
+        legend.title=element_blank(),
+        legend.key=element_blank(),
+        axis.text.x= element_text(angle=0,hjust = 0.5))
+dev.off()
+write.csv(dataITGAM,file = "dataITGAM.csv",row.names = T)
+
+#CXCL1
+dataCXCL1= data.frame(t(x["CXCL1",group$sample]))#
+dataCXCL1=t(dataCXCL1)
+dataCXCL1=data.frame(dataCXCL1)
+group_name =unique(group$group)
+my_comparison =as.list(as.data.frame(combn(group_name,2)))
+dataCXCL1$Group = factor(group$group)
+# Visualization(CXCL1)
+ggplot(dataCXCL1,aes(x =Group,y=dataCXCL1,color=Group))+
+  scale_color_manual(values=colors[1:2])+
+  geom_boxplot(width=0.5)+
+  geom_point(position = position_jitter(0.2),size=1)+
+  stat_summary(fun=median,geom='crossbar',size=1,width=0.3)+
+  stat_compare_means(comparisons=my_comparison,size=13,
+                     method='wilcox.test',exact=FALSE,aes(label=..p.signif..))+
+  coord_cartesian(ylim = c(1,9))+
+  theme_bw()+xlab("")+ylab("CXCL1Gene(log2CPM)")+
+  theme(panel.grid.major=element_blank(),panel.grid.minor=element_blank())+
+  theme(axis.text=element_text(size=20,colour="black",face="bold"),
+        axis.title=element_text(size=20,colour="black",face= "bold"),
+        legend.text=element_text(size=20,face="bold"),
+        legend.title=element_blank(),
+        legend.key=element_blank(),
+        axis.text.x= element_text(angle=0,hjust = 0.5))
+dev.off()
+write.csv(dataCXCL1,file = "dataCXCL1.csv",row.names = T)
+
+#ROC
+hubgenes=c("ITGAM","CXCL1")
+hubgenes_expression<-exp1[match(hubgenes,rownames (exp1)),]
+hubgenes_expression=as.matrix(hubgenes_expression)
+library(pROC)
+roc1<- roc(group_list, hubgenes_expression[1,])
+roc2<- roc(group_list, hubgenes_expression[2,])
+plot(roc1, col = "red", legacy.axes = TRUE,
+     main = "External validation ROC curves")
+plot(roc2, add=TRUE, col="blue")
+round(auc(roc1),3)##AUC
+round(ci(roc1),3)##95%CI
+round(auc(roc2),3)##AUC
+round(ci(roc2),3)##95%CI
+legend("bottomright",
+       legend = c("ITGAM (AUC:0.844 95%CI:0.673 0.844 1.000)", "CXCL1 (AUC:0.622 95%CI:0.341 0.622 0.903)"),
+       col = c("red", "blue"), lwd = 2)
+dev.off()
